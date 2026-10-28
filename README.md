@@ -4,7 +4,7 @@ Reads your weekly timetable from Canvas, tops it up to 37:30 with self-managed l
 
 ## Easiest: the note builder page (any browser, Mac or iPad)
 
-`otj-note-builder.html` is a single page you open in a browser. Nothing to install.
+Open **https://alihiridjee-dot.github.io/aptem-otj-autofill/** in any browser. Nothing to install.
 
 1. **Canvas:** open the week's timetable, select the page content (title down to the last table) and copy it.
 2. **Note builder:** paste it into box 1. Untick missed sessions, add SML topics (type them, or press **Suggest SML topics** if you've set a DeepSeek key in Settings), then **Build note**.
@@ -13,7 +13,6 @@ Reads your weekly timetable from Canvas, tops it up to 37:30 with self-managed l
    - Press **Copy for autofill**, open the task on Aptem, choose the **OTJ fill** bookmark. If Safari asks to paste, allow it. If it can't read the clipboard it asks you to paste the text into a box.
 4. Check every field in Aptem, then press **Save** yourself.
 
-To use it on an iPad the page has to be hosted somewhere (an iPad can't run a downloaded HTML file).
 
 ## Alternative: the Tampermonkey userscript
 
@@ -23,7 +22,7 @@ Captures the timetable automatically when you open it on Canvas. Needs Tampermon
 
 1. Install the **Tampermonkey** extension for your browser (Chrome, Edge, Firefox or Safari).
 2. In Chrome or Edge: open the extensions page, switch on **Developer mode**, then open Tampermonkey's details and switch on **Allow User Scripts**. (Chrome won't run user scripts without this.)
-3. Open `aptem-otj-autofill.user.js` in the browser (or drag it onto a browser window). Tampermonkey shows an install page; click **Install**.
+3. Open https://alihiridjee-dot.github.io/aptem-otj-autofill/aptem-otj-autofill.user.js. Tampermonkey shows an install page; click **Install**.
 
 ## Each week
 

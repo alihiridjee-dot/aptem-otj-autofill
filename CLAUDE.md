@@ -22,7 +22,8 @@ A Tampermonkey userscript (`aptem-otj-autofill.user.js`) for Anglia Ruskin medic
 ## Note builder page (`otj-note-builder.html`)
 A second, install-free route that works on any browser including iPad Safari.
 - The user pastes the Canvas timetable. The HTML clipboard is parsed with the same walk as `parseCanvasTimetable`, with a tab-separated plain-text fallback.
-- Weeks and settings live in `localStorage`. DeepSeek is called with `fetch` (browser CORS not yet confirmed).
+- Weeks and settings live in `localStorage`. DeepSeek is called with `fetch`; its CORS preflight allows the Pages origin.
+- Hosted at https://alihiridjee-dot.github.io/aptem-otj-autofill/ (GitHub Pages from `main`, repo `alihiridjee-dot/aptem-otj-autofill`). Pushing to `main` updates it.
 - **Copy for autofill** copies `OTJ-AUTOFILL:{json}`. The **OTJ fill** bookmarklet is built from `otjAutofill.toString()`. It reads the clipboard (or prompts for a paste) and fills the form.
 - `otjAutofill` must stay self-contained: it can't use anything outside its own body.
 - The pure helpers and Aptem fill code are copied from the userscript. Keep both copies in sync.
