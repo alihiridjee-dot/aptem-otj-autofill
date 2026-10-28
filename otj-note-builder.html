@@ -1,0 +1,840 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OTJ Note Builder</title>
+<style>
+  :root {
+    --bg: #f5f7fb; --card: #ffffff; --text: #1d2433; --muted: #5b6478; --line: #d6dbe8;
+    --accent: #1a3fd1; --accent-soft: #e8ecf7; --ok: #17803d; --warn: #a15c00; --bad: #b42318;
+    --field: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #11141b; --card: #1a1f2a; --text: #e6e9f0; --muted: #9aa3b5; --line: #2e3545;
+      --accent: #7d9bff; --accent-soft: #252d45; --ok: #5cc98a; --warn: #f0b25a; --bad: #ff8a80;
+      --field: #141821;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 20px 16px 60px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 16px; margin: 0 0 8px; }
+  p { margin: 6px 0; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin-top: 14px; }
+  .muted { color: var(--muted); font-size: 13px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+  label.field { display: block; margin: 8px 0; font-size: 13px; color: var(--muted); }
+  input[type=text], input[type=password], select, textarea, .paste {
+    width: 100%; display: block; margin-top: 3px; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--field); color: var(--text); padding: 8px; font: inherit; }
+  textarea { min-height: 110px; font: 13px/1.4 ui-monospace, Menlo, Consolas, monospace; }
+  .paste { min-height: 80px; color: var(--muted); cursor: text; }
+  .paste:focus { outline: 2px solid var(--accent); color: var(--text); }
+  button { border: 0; border-radius: 999px; padding: 9px 15px; font: inherit; font-weight: 600; cursor: pointer;
+    background: var(--accent-soft); color: var(--accent); }
+  button.primary { background: var(--accent); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  .day { font-weight: 600; margin-top: 10px; }
+  .sess { display: flex; gap: 8px; align-items: flex-start; padding: 3px 0; }
+  .sess input { margin-top: 4px; }
+  .summary { font-weight: 600; }
+  .status { white-space: pre-wrap; font-size: 13px; margin-top: 8px; padding: 8px 10px; border-radius: 8px; background: var(--accent-soft); }
+  .status.ok { color: var(--ok); } .status.warn { color: var(--warn); } .status.bad { color: var(--bad); }
+  .bm { display: inline-block; padding: 9px 15px; border-radius: 999px; background: var(--accent); color: #fff;
+    font-weight: 600; text-decoration: none; }
+  ol { padding-left: 20px; margin: 6px 0; }
+  details summary { cursor: pointer; font-weight: 600; }
+</style>
+</head>
+<body>
+<main>
+  <h1>OTJ note builder</h1>
+  <p class="muted">Turns your Canvas timetable into a weekly Off-The-Job note, topped up to your target with self-managed learning. Everything stays in this browser.</p>
+  <div id="app"></div>
+</main>
+<script>
+(function () {
+  'use strict';
+
+  // ───────────────────────── Pure helpers (copied from aptem-otj-autofill.user.js; keep in sync) ─────────────────────────
+
+  const DAYS = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+  const MONTHS = ['january', 'february', 'march', 'april', 'may', 'june', 'july', 'august',
+    'september', 'october', 'november', 'december'];
+
+  const clean = (s) => String(s || '').replace(/ /g, ' ').replace(/\s+/g, ' ').trim();
+  const norm = (s) => clean(s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+
+  function parseTimeRange(text) {
+    const m = clean(text).match(/^(\d{1,2})[:.](\d{2})\s*[-–—to]+\s*(\d{1,2})[:.](\d{2})$/i);
+    if (!m) return null;
+    const start = +m[1] * 60 + +m[2];
+    const end = +m[3] * 60 + +m[4];
+    if (end <= start || end > 24 * 60) return null;
+    return { start, end };
+  }
+
+  function parseDayHeading(text) {
+    const m = clean(text).toLowerCase().match(
+      /^(monday|tuesday|wednesday|thursday|friday|saturday|sunday),?\s+(\d{1,2})(?:st|nd|rd|th)?\s+([a-z]+),?\s+(\d{4})$/);
+    if (!m) return null;
+    const month = MONTHS.indexOf(m[3]) + 1;
+    if (!month) return null;
+    const day = +m[2];
+    if (day < 1 || day > 31) return null;
+    return `${m[4]}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+
+  function fmtHM(mins) {
+    const sign = mins < 0 ? '-' : '';
+    mins = Math.abs(Math.round(mins));
+    return `${sign}${String(Math.floor(mins / 60)).padStart(2, '0')}:${String(mins % 60).padStart(2, '0')}`;
+  }
+
+  function parseHM(text) {
+    const t = clean(text);
+    let m = t.match(/^(\d{1,3}):(\d{2})$/);
+    if (m) return +m[1] * 60 + +m[2];
+    m = t.match(/^(\d{1,3}(?:\.\d+)?)$/);
+    if (m) return Math.round(parseFloat(m[1]) * 60);
+    return null;
+  }
+
+  const isoToUK = (iso) => iso.split('-').reverse().join('/');
+  function shortDay(iso) {
+    const [y, mo, d] = iso.split('-').map(Number);
+    const dow = new Date(Date.UTC(y, mo - 1, d)).getUTCDay();
+    const name = DAYS[(dow + 6) % 7];
+    return `${name[0].toUpperCase()}${name.slice(1, 3)} ${String(d).padStart(2, '0')}/${String(mo).padStart(2, '0')}`;
+  }
+
+  function normaliseTopics(list, target) {
+    let items = (Array.isArray(list) ? list : [])
+      .map((x) => ({ topic: clean(x && (x.topic || x.title || x.name)), minutes: Number(x && (x.minutes || x.mins)) || 0 }))
+      .filter((x) => x.topic);
+    if (!items.length || target <= 0) return [];
+    const weight = (x) => (x.minutes > 0 ? x.minutes : 1);
+    const total = items.reduce((a, x) => a + weight(x), 0);
+    items = items.map((x) => ({
+      topic: x.topic,
+      minutes: Math.max(15, Math.round((weight(x) / total) * target / 15) * 15),
+    }));
+    let diff = target - items.reduce((a, x) => a + x.minutes, 0);
+    let guard = 1000;
+    while (diff !== 0 && guard--) {
+      items.sort((a, b) => b.minutes - a.minutes);
+      const step = diff > 0 ? 15 : -15;
+      const victim = items.find((x) => x.minutes + step >= 15) || null;
+      if (!victim) break;
+      victim.minutes += step;
+      diff -= step;
+    }
+    if (diff !== 0 && items.length) items[0].minutes += diff;
+    return items.filter((x) => x.minutes > 0);
+  }
+
+  function topicsToText(items) {
+    return items.map((x) => `${fmtHM(x.minutes)} | ${x.topic}`).join('\n');
+  }
+  function textToTopics(text) {
+    return String(text || '').split('\n').map((line) => {
+      const m = line.match(/^\s*(\d{1,2}:\d{2}|\d+(?:\.\d+)?)\s*\|\s*(.+)$/);
+      if (!m) return null;
+      return { minutes: parseHM(m[1]) || 0, topic: clean(m[2]) };
+    }).filter((x) => x && x.topic && x.minutes > 0);
+  }
+
+  const sessionMinutes = (s) => s.end - s.start;
+
+  function buildNote(week, sessions, topics, targetMins) {
+    const lines = [];
+    lines.push(clean(week.title) || 'Weekly timetable');
+    if (week.theme && week.theme.length) lines.push(`Theme: ${week.theme.join('; ')}`);
+    lines.push('');
+    const taught = sessions.reduce((a, s) => a + sessionMinutes(s), 0);
+    lines.push(`Timetabled teaching (${fmtHM(taught)}):`);
+    let lastDate = null;
+    for (const s of sessions) {
+      if (s.date !== lastDate) { lines.push(shortDay(s.date)); lastDate = s.date; }
+      const delivery = s.delivery ? ` [${s.delivery}]` : '';
+      lines.push(`  ${fmtHM(s.start)}-${fmtHM(s.end)} ${s.title}${delivery}`);
+    }
+    const sml = topics.reduce((a, t) => a + t.minutes, 0);
+    if (topics.length) {
+      lines.push('');
+      lines.push(`Self-managed learning (${fmtHM(sml)}):`);
+      for (const t of topics) lines.push(`  ${fmtHM(t.minutes)} ${t.topic}`);
+    }
+    lines.push('');
+    lines.push(`Total: ${fmtHM(taught + sml)}${targetMins ? ` (target ${fmtHM(targetMins)})` : ''}`);
+    return lines.join('\n');
+  }
+
+  // ───────────────────────── Reading a pasted timetable ─────────────────────────
+
+  const sortSessions = (list) => list.sort((a, b) =>
+    (a.date + String(a.start).padStart(4, '0')).localeCompare(b.date + String(b.start).padStart(4, '0')));
+
+  /** Same walk as the userscript's parseCanvasTimetable, run on the HTML you pasted. */
+  function parseTimetableHTML(root) {
+    const titleEl = root.querySelector('h1.page-title') ||
+      [...root.querySelectorAll('h1,h2,h3,p')].find((e) => /timetable/i.test(e.textContent) && clean(e.textContent).length < 120);
+    const title = clean(titleEl ? titleEl.textContent : '');
+
+    const theme = [];
+    const sessions = [];
+    const warnings = [];
+    let currentDate = null;
+    let inTheme = false;
+
+    for (const el of root.querySelectorAll('h1,h2,h3,h4,h5,h6,p,table')) {
+      if (el.closest('table') && el.tagName !== 'TABLE') continue;
+      if (el.tagName === 'TABLE') {
+        inTheme = false;
+        const rows = [...el.querySelectorAll('tr')];
+        let col = { time: 0, title: 1, presenter: 2, delivery: 3 };
+        const headerRow = rows.find((r) => /session title/i.test(r.textContent));
+        if (headerRow) {
+          const heads = [...headerRow.children].map((c) => norm(c.textContent));
+          const idx = (re) => heads.findIndex((t) => re.test(t));
+          col = {
+            time: Math.max(idx(/^time/), 0),
+            title: idx(/session|title/) >= 0 ? idx(/session|title/) : 1,
+            presenter: idx(/presenter|lecturer/),
+            delivery: idx(/delivery|location|room/),
+          };
+        }
+        for (const tr of rows) {
+          const cells = [...tr.children].filter((c) => /^T[DH]$/.test(c.tagName));
+          if (cells.length < 2) continue;
+          const time = parseTimeRange(cells[col.time] ? cells[col.time].textContent : '');
+          if (!time) continue;
+          const titleText = clean(cells[col.title] ? cells[col.title].textContent : '');
+          if (!titleText || /^(lunch|break)\b/i.test(titleText)) continue;
+          if (!currentDate) { warnings.push(`Skipped "${titleText}": no day heading above it`); continue; }
+          const delivery = col.delivery >= 0 && cells[col.delivery] ? clean(cells[col.delivery].textContent) : '';
+          sessions.push({ date: currentDate, start: time.start, end: time.end, title: titleText, delivery });
+        }
+        continue;
+      }
+      const text = clean(el.textContent);
+      const day = parseDayHeading(text);
+      if (day) { currentDate = day; inTheme = false; continue; }
+      if (/weekly theme/i.test(text)) {
+        theme.push(clean(text.replace(/^.*?weekly theme\s*:?\s*/i, '')));
+        inTheme = true;
+        continue;
+      }
+      if (inTheme && /^H[1-6]$/.test(el.tagName) && text) theme.push(text);
+      else if (el.tagName === 'P') inTheme = false;
+    }
+    return { title, theme: theme.filter(Boolean), sessions: sortSessions(sessions), warnings };
+  }
+
+  /** Fallback for plain-text pastes: table cells arrive tab-separated, one row per line. */
+  function parseTimetableText(text) {
+    let title = '';
+    const theme = [];
+    const sessions = [];
+    const warnings = [];
+    let currentDate = null;
+    let inTheme = false;
+    for (const raw of String(text || '').split(/\r?\n/)) {
+      const line = clean(raw);
+      if (!line) continue;
+      const day = parseDayHeading(line);
+      if (day) { currentDate = day; inTheme = false; continue; }
+      if (/weekly theme/i.test(line)) {
+        theme.push(clean(line.replace(/^.*?weekly theme\s*:?\s*/i, '')));
+        inTheme = true;
+        continue;
+      }
+      const cells = raw.split('\t').map(clean);
+      let time = parseTimeRange(cells[0]);
+      let titleText = cells[1] || '';
+      let delivery = cells[3] || '';
+      if (!time) {
+        const m = line.match(/^(\d{1,2}[:.]\d{2}\s*[-–—]\s*\d{1,2}[:.]\d{2})\s+(.+)$/);
+        if (m) { time = parseTimeRange(m[1]); titleText = m[2]; delivery = ''; }
+      }
+      if (time) {
+        inTheme = false;
+        if (!titleText || /^(lunch|break)\b/i.test(titleText)) continue;
+        if (!currentDate) { warnings.push(`Skipped "${titleText}": no day heading above it`); continue; }
+        sessions.push({ date: currentDate, start: time.start, end: time.end, title: titleText, delivery });
+        continue;
+      }
+      if (!title && /timetable/i.test(line) && line.length < 120) { title = line; continue; }
+      if (inTheme && line.length < 80 && !/^time\b/i.test(line)) theme.push(line);
+    }
+    return { title, theme: theme.filter(Boolean), sessions: sortSessions(sessions), warnings };
+  }
+
+  // ───────────────────────── Aptem autofill (runs as a bookmarklet on Aptem) ─────────────────────────
+
+  // Self-contained: this function's source becomes the bookmarklet, so it can't use anything outside itself.
+  // It reads the "Copy for autofill" text, fills the Add Note form, and never presses Save.
+  async function otjAutofill() {
+    const PREFIX = 'OTJ-AUTOFILL:';
+    const clean = (s) => String(s || '').replace(/ /g, ' ').replace(/\s+/g, ' ').trim();
+    const norm = (s) => clean(s).toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+    const isVisible = (el) => !!el && !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+
+    function showReport(lines) {
+      const old = document.getElementById('otj-report');
+      if (old) old.remove();
+      const box = document.createElement('div');
+      box.id = 'otj-report';
+      box.style.cssText = 'position:fixed;z-index:2147483646;right:16px;bottom:16px;max-width:min(380px,calc(100vw - 32px));' +
+        'background:#fff;color:#1d2433;border:1px solid #d6dbe8;border-radius:10px;padding:12px 14px;' +
+        'box-shadow:0 8px 24px rgba(0,0,0,.18);font:13px/1.45 system-ui,-apple-system,sans-serif;white-space:pre-wrap';
+      const text = document.createElement('div');
+      text.textContent = lines.join('\n');
+      const close = document.createElement('button');
+      close.textContent = 'Dismiss';
+      close.style.cssText = 'margin-top:8px;border:0;border-radius:999px;padding:6px 12px;background:#e8ecf7;color:#1a3fd1;font-weight:600;cursor:pointer';
+      close.onclick = () => box.remove();
+      box.append(text, close);
+      document.body.append(box);
+    }
+
+    let raw = '';
+    try { raw = await navigator.clipboard.readText(); } catch (e) { /* no clipboard access: ask instead */ }
+    if (!String(raw).trim().startsWith(PREFIX)) {
+      raw = prompt('Paste the autofill text from the OTJ note builder ("Copy for autofill"):') || '';
+    }
+    raw = String(raw).trim();
+    if (!raw) return;
+    if (!raw.startsWith(PREFIX)) { showReport(['✗ That isn\'t OTJ autofill text. In the note builder, press "Copy for autofill" again.']); return; }
+    let data;
+    try { data = JSON.parse(raw.slice(PREFIX.length)); } catch (e) { showReport(['✗ The autofill text is incomplete. Copy it again.']); return; }
+
+    function bestOption(optionTexts, wanted) {
+      const w = norm(wanted);
+      if (!w) return -1;
+      let best = -1, bestScore = 0;
+      const wWords = w.split(' ');
+      optionTexts.forEach((t, i) => {
+        const o = norm(t);
+        if (!o) return;
+        let score;
+        if (o === w) score = 1000;
+        else if (o.includes(w)) score = 500;
+        else score = wWords.filter((word) => o.split(' ').includes(word)).length;
+        if (score > bestScore) { bestScore = score; best = i; }
+      });
+      return best;
+    }
+
+    function findDialog() {
+      const heads = [...document.querySelectorAll('h1,h2,h3,h4,h5,.modal-title,.k-window-title,span,div')]
+        .filter((e) => clean(e.textContent) === 'Add Note' && isVisible(e));
+      for (const head of heads) {
+        let el = head;
+        while (el && el !== document.body) {
+          if (el.querySelector('textarea') && el.querySelector('input,select')) return el;
+          el = el.parentElement;
+        }
+      }
+      return null;
+    }
+
+    function controlForLabel(dialog, labelRe) {
+      const labels = [...dialog.querySelectorAll('label,span,div,b,strong,p')]
+        .filter((e) => isVisible(e) && labelRe.test(clean(e.textContent)) && clean(e.textContent).length < 60 &&
+          ![...e.children].some((c) => labelRe.test(clean(c.textContent))));
+      for (const label of labels) {
+        if (label.htmlFor) {
+          const byId = document.getElementById(label.htmlFor);
+          if (byId) return byId;
+        }
+        let node = label;
+        for (let depth = 0; depth < 4 && node; depth++) {
+          let sib = node.nextElementSibling;
+          while (sib) {
+            const c = sib.matches('select,input:not([type=hidden]),textarea,[role=combobox],.k-dropdown,.k-dropdownlist,.k-picker')
+              ? sib
+              : sib.querySelector('select,input:not([type=hidden]):not([type=radio]),textarea,[role=combobox],.k-dropdown,.k-dropdownlist,.k-picker');
+            if (c) return c;
+            sib = sib.nextElementSibling;
+          }
+          node = node.parentElement;
+          if (node === dialog) break;
+        }
+      }
+      return null;
+    }
+
+    function setNativeValue(el, value) {
+      const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype
+        : el.tagName === 'SELECT' ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+      const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+      el.focus();
+      setter.call(el, value);
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      el.dispatchEvent(new Event('blur', { bubbles: true }));
+    }
+
+    function kendoWidget(ctrl, name) {
+      const $ = window.jQuery;
+      if (!$) return null;
+      const candidates = [ctrl, ...ctrl.querySelectorAll('input,select'),
+        ...(ctrl.parentElement ? ctrl.parentElement.querySelectorAll('input,select') : [])];
+      for (const c of candidates) {
+        const w = $(c).data(name);
+        if (w) return w;
+      }
+      return null;
+    }
+
+    async function setDropdown(ctrl, wanted) {
+      const sel = ctrl.tagName === 'SELECT' ? ctrl : ctrl.querySelector('select');
+      if (sel && sel.options.length) {
+        const i = bestOption([...sel.options].map((o) => o.text), wanted);
+        if (i < 0) return { ok: false, msg: `no option like "${wanted}" in [${[...sel.options].map((o) => o.text).join(', ')}]` };
+        setNativeValue(sel, sel.options[i].value);
+        const k = kendoWidget(ctrl, 'kendoDropDownList');
+        if (k) { k.value(sel.options[i].value); k.trigger('change'); }
+        return { ok: true, msg: sel.options[i].text };
+      }
+      const k = kendoWidget(ctrl, 'kendoDropDownList') || kendoWidget(ctrl, 'kendoComboBox');
+      if (k) {
+        const items = k.dataSource.view().map((d) => (typeof d === 'object' ? d[k.options.dataTextField] || d.text || d.Text : d));
+        const i = bestOption(items.map(String), wanted);
+        if (i < 0) return { ok: false, msg: `no option like "${wanted}" in [${items.join(', ')}]` };
+        k.select(i + (k.options.optionLabel ? 1 : 0));
+        k.trigger('change');
+        return { ok: true, msg: String(items[i]) };
+      }
+      (ctrl.querySelector('[role=combobox],button,.k-input-button,.k-select') || ctrl).click();
+      await sleep(400);
+      const opts = [...document.querySelectorAll('[role=option],li.k-list-item,li.k-item,.dropdown-item,mat-option')].filter(isVisible);
+      const i = bestOption(opts.map((o) => o.textContent), wanted);
+      if (i < 0) {
+        document.body.click();
+        return { ok: false, msg: `couldn't open the list or find "${wanted}"` };
+      }
+      const text = clean(opts[i].textContent);
+      opts[i].click();
+      return { ok: true, msg: text };
+    }
+
+    async function setDate(ctrl, iso) {
+      const input = ctrl.tagName === 'INPUT' ? ctrl : ctrl.querySelector('input');
+      if (!input) return { ok: false, msg: 'no date box found' };
+      const uk = iso.split('-').reverse().join('/');
+      const k = kendoWidget(input, 'kendoDatePicker');
+      const [y, m, d] = iso.split('-').map(Number);
+      if (k) { k.value(new Date(y, m - 1, d)); k.trigger('change'); return { ok: true, msg: uk }; }
+      setNativeValue(input, input.type === 'date' ? iso : uk);
+      return { ok: true, msg: uk };
+    }
+
+    function chooseRadio(dialog, labelRe) {
+      const labels = [...dialog.querySelectorAll('label,span')].filter((e) => labelRe.test(clean(e.textContent)) && isVisible(e));
+      for (const l of labels) {
+        const input = l.control || l.querySelector('input[type=radio]') ||
+          (l.previousElementSibling && l.previousElementSibling.matches('input[type=radio]') ? l.previousElementSibling : null) ||
+          (l.parentElement && l.parentElement.querySelector('input[type=radio]'));
+        if (input) {
+          input.click();
+          if (!input.checked) { input.checked = true; input.dispatchEvent(new Event('change', { bubbles: true })); }
+          return { ok: true, msg: clean(l.textContent) };
+        }
+        l.click();
+        return { ok: true, msg: clean(l.textContent) };
+      }
+      return { ok: false, msg: 'option not found' };
+    }
+
+    async function waitFor(fn, ms = 3000) {
+      const t0 = Date.now();
+      while (Date.now() - t0 < ms) {
+        const v = fn();
+        if (v) return v;
+        await sleep(100);
+      }
+      return null;
+    }
+
+    const report = [];
+    const line = (name, r) => report.push(`${r.ok ? '✓' : '✗'} ${name}: ${r.msg}`);
+    try {
+      let dialog = findDialog();
+      if (!dialog) {
+        const addBtn = [...document.querySelectorAll('button,a')].find((b) => /^\+?\s*add note$/i.test(clean(b.textContent)) && isVisible(b));
+        if (!addBtn) { showReport(['✗ Open the task you want and click "+ Add Note" first, then run OTJ fill again.']); return; }
+        addBtn.click();
+        dialog = await waitFor(findDialog);
+        if (!dialog) { showReport(['✗ Clicked "Add Note" but the form didn\'t appear.']); return; }
+      }
+
+      const noteType = controlForLabel(dialog, /^note type:?$/i);
+      line('Note type', noteType ? await setDropdown(noteType, data.noteType) : { ok: false, msg: 'field not found' });
+
+      const date = controlForLabel(dialog, /^completion date:?$/i);
+      line('Completion date', date ? await setDate(date, data.date) : { ok: false, msg: 'field not found' });
+
+      line('Hours collection type', chooseRadio(dialog, /^off\s*the\s*job\s*training\s*hours$/i));
+
+      const hoursBox = await waitFor(() => controlForLabel(dialog, /^off.?the.?job hours spent:?$/i));
+      if (hoursBox) {
+        const input = hoursBox.tagName === 'INPUT' ? hoursBox : hoursBox.querySelector('input');
+        const mk = input && kendoWidget(input, 'kendoMaskedTextBox');
+        if (mk) { mk.value(data.hours); mk.trigger('change'); }
+        if (input) setNativeValue(input, data.hours);
+        line('OTJ hours spent', { ok: !!input, msg: input ? data.hours : 'no input' });
+      } else line('OTJ hours spent', { ok: false, msg: 'field not found (did the radio button switch?)' });
+
+      const typeCtrl = controlForLabel(dialog, /^off.?the.?job hours type:?$/i);
+      line('OTJ hours type', typeCtrl ? await setDropdown(typeCtrl, data.otjType) : { ok: false, msg: 'field not found' });
+
+      const boxes = [...dialog.querySelectorAll('textarea')].filter(isVisible);
+      const notes = boxes[boxes.length - 1];
+      if (notes) { setNativeValue(notes, data.note); line('Notes', { ok: true, msg: `${data.note.split('\n').length} lines` }); }
+      else line('Notes', { ok: false, msg: 'notes box not found' });
+    } catch (e) {
+      report.push(`✗ ${e.message}`);
+    }
+    report.push('', 'Check every field, then press Save yourself. Fill any ✗ by hand.');
+    showReport(report);
+  }
+
+  // Leading indentation is dropped to keep the bookmark short (no multi-line strings in otjAutofill rely on it).
+  const bookmarkletURL = () => 'javascript:' + encodeURIComponent(`void((${String(otjAutofill).replace(/^[ \t]+/gm, '')})())`);
+
+  // ───────────────────────── Storage & settings ─────────────────────────
+
+  const store = {
+    get(k, fallback) {
+      try { const v = localStorage.getItem(`otj:${k}`); return v == null ? fallback : JSON.parse(v); } catch (e) { return fallback; }
+    },
+    set(k, v) {
+      try { localStorage.setItem(`otj:${k}`, JSON.stringify(v)); } catch (e) { /* private mode: works until the tab closes */ }
+    },
+  };
+  const DEFAULTS = { apiKey: '', model: 'deepseek-chat', target: '37:30', noteType: 'Other', otjType: 'paid in my own time' };
+  const settings = { ...DEFAULTS, ...store.get('settings', {}) };
+  const weeks = store.get('weeks', {});
+  const saveWeeks = () => store.set('weeks', weeks);
+
+  async function copyText(text) {
+    try { await navigator.clipboard.writeText(text); return true; } catch (e) { /* fall back below */ }
+    const ta = h('textarea', { style: 'position:fixed;top:0;left:0;opacity:0' }, text);
+    document.body.append(ta);
+    ta.select();
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    ta.remove();
+    return ok;
+  }
+
+  // ───────────────────────── DeepSeek: SML topics ─────────────────────────
+
+  async function askDeepSeek(week, sessions, remainingMins) {
+    if (!settings.apiKey) throw new Error('No DeepSeek API key set (Settings, below). You can type the topics in by hand instead.');
+    const payload = {
+      model: settings.model,
+      response_format: { type: 'json_object' },
+      temperature: 0.4,
+      messages: [
+        {
+          role: 'system',
+          content: 'You plan self-managed revision for a UK medical student. Reply with JSON only: ' +
+            '{"topics":[{"topic":"specific revision topic","minutes":90}]}. ' +
+            'Blocks are 60-180 minutes in multiples of 15 and must add up exactly to the minutes requested. ' +
+            'Topics must be specific, clinically relevant, follow on from this week\'s theme and sessions, ' +
+            'and must not just repeat a session title. Write each topic as a short phrase (max 15 words).',
+        },
+        {
+          role: 'user',
+          content: JSON.stringify({
+            week: week.title,
+            theme: week.theme,
+            sessions: sessions.map((s) => s.title), // titles only; no names or rooms
+            minutes_to_plan: remainingMins,
+          }),
+        },
+      ],
+    };
+    let res;
+    try {
+      res = await fetch('https://api.deepseek.com/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.apiKey}` },
+        body: JSON.stringify(payload),
+      });
+    } catch (e) {
+      throw new Error('Could not reach DeepSeek (network error, or the browser blocked the request). Type the topics in by hand.');
+    }
+    const body = await res.text();
+    if (!res.ok) throw new Error(`DeepSeek returned ${res.status}: ${body.slice(0, 200)}`);
+    const content = JSON.parse(body).choices[0].message.content;
+    const json = JSON.parse(content.replace(/^```(?:json)?|```$/g, '').trim());
+    return normaliseTopics(json.topics || json, remainingMins);
+  }
+
+  // ───────────────────────── UI ─────────────────────────
+
+  /** Tiny element builder (textContent only, never innerHTML with page data). */
+  function h(tag, attrs, ...children) {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) {
+      if (k === 'style') el.style.cssText = v;
+      else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+      else if (k === 'value') el.value = v;
+      else if (v === true) el.setAttribute(k, '');
+      else if (v !== false && v != null) el.setAttribute(k, v);
+    }
+    for (const c of children.flat()) {
+      if (c == null || c === false) continue;
+      el.append(c instanceof Node ? c : document.createTextNode(String(c)));
+    }
+    return el;
+  }
+
+  const app = document.getElementById('app');
+  let weekKey = Object.keys(weeks).sort().reverse()[0] || null;
+  let attended = {};
+  let topicsText = '';
+  let noteText = '';
+  let pasteMessage = null; // shown once after a successful paste re-renders the page
+
+  function statusBox() {
+    const el = h('div', { class: 'status', style: 'display:none' });
+    el.set = (text, kind) => {
+      el.style.display = text ? 'block' : 'none';
+      el.className = `status ${kind || ''}`;
+      el.textContent = text || '';
+    };
+    return el;
+  }
+
+  function render() {
+    app.replaceChildren(pasteCard(), ...(weekKey && weeks[weekKey] ? weekCards(weeks[weekKey]) : []), autofillCard(), settingsCard());
+  }
+
+  function pasteCard() {
+    const status = statusBox();
+    const area = h('div', { class: 'paste', contenteditable: 'true', role: 'textbox', 'aria-label': 'Paste timetable here' },
+      'Tap here and paste');
+    area.addEventListener('paste', (e) => {
+      e.preventDefault();
+      const html = e.clipboardData.getData('text/html');
+      const text = e.clipboardData.getData('text/plain');
+      let parsed = html ? parseTimetableHTML(new DOMParser().parseFromString(html, 'text/html').body) : null;
+      if (!parsed || !parsed.sessions.length) parsed = parseTimetableText(text);
+      area.textContent = 'Tap here and paste';
+      area.blur();
+      if (!parsed.sessions.length) {
+        status.set('✗ No sessions found. Copy the whole timetable page (day headings and tables), then paste again.', 'bad');
+        return;
+      }
+      const firstDate = parsed.sessions[0].date;
+      parsed.title = parsed.title || `Week of ${isoToUK(firstDate)}`;
+      weekKey = `${firstDate}|${parsed.title}`;
+      weeks[weekKey] = { ...parsed, firstDate, captured: new Date().toISOString() };
+      saveWeeks();
+      attended = {}; topicsText = ''; noteText = '';
+      const taught = parsed.sessions.reduce((a, s) => a + sessionMinutes(s), 0);
+      pasteMessage = [`✓ Read "${parsed.title}": ${parsed.sessions.length} sessions, ${fmtHM(taught)} timetabled.` +
+        (parsed.warnings.length ? `\n⚠ ${parsed.warnings.join('\n⚠ ')}` : ''), parsed.warnings.length ? 'warn' : 'ok'];
+      render();
+    });
+    if (pasteMessage) { status.set(...pasteMessage); pasteMessage = null; }
+    area.addEventListener('focus', () => { if (area.textContent === 'Tap here and paste') area.textContent = ''; });
+    area.addEventListener('blur', () => { if (!clean(area.textContent)) area.textContent = 'Tap here and paste'; });
+
+    const keys = Object.keys(weeks).sort().reverse();
+    const picker = keys.length ? h('label', { class: 'field' }, 'Or pick a week you pasted before',
+      h('select', { onchange: (e) => { weekKey = e.target.value; attended = {}; topicsText = ''; noteText = ''; render(); } },
+        keys.map((k) => h('option', { value: k, selected: k === weekKey }, weeks[k].title || k)))) : null;
+
+    return h('section', { class: 'card' },
+      h('h2', {}, '1. Paste your timetable'),
+      h('p', { class: 'muted' }, 'On Canvas, open the week\'s timetable page. Select everything in the page content (from the title to the last table) and copy it. Then paste it below.'),
+      area, status, picker);
+  }
+
+  function weekCards(week) {
+    const target = parseHM(settings.target) || 2250;
+    week.sessions.forEach((s, i) => { if (!(i in attended)) attended[i] = true; });
+    const chosen = () => week.sessions.filter((_, i) => attended[i]);
+    const taught = () => chosen().reduce((a, s) => a + sessionMinutes(s), 0);
+    const remaining = () => Math.max(0, target - taught());
+
+    // Week details (editable, in case the paste missed the title or theme)
+    const titleInput = h('input', { type: 'text', value: week.title,
+      onchange: (e) => { week.title = clean(e.target.value); saveWeeks(); } });
+    const themeInput = h('input', { type: 'text', value: (week.theme || []).join('; '),
+      onchange: (e) => { week.theme = e.target.value.split(';').map(clean).filter(Boolean); saveWeeks(); } });
+
+    const summary = h('p', { class: 'summary' });
+    const updateSummary = () => {
+      summary.textContent = `Timetabled ${fmtHM(taught())} · SML needed ${fmtHM(remaining())} · Target ${fmtHM(target)}`;
+    };
+    const list = h('div');
+    let lastDate = null;
+    week.sessions.forEach((s, i) => {
+      if (s.date !== lastDate) { list.append(h('div', { class: 'day' }, shortDay(s.date))); lastDate = s.date; }
+      list.append(h('label', { class: 'sess' },
+        h('input', { type: 'checkbox', checked: attended[i], onchange: (e) => { attended[i] = e.target.checked; updateSummary(); } }),
+        h('span', {}, `${fmtHM(s.start)}-${fmtHM(s.end)} ${s.title}`)));
+    });
+    updateSummary();
+
+    // SML
+    const smlStatus = statusBox();
+    const topicsBox = h('textarea', { placeholder: 'One per line, e.g.\n01:30 | Upper vs lower motor neurone signs', value: topicsText,
+      oninput: (e) => { topicsText = e.target.value; } });
+    const suggestBtn = h('button', {}, 'Suggest SML topics');
+    suggestBtn.addEventListener('click', async () => {
+      if (!remaining()) { smlStatus.set('Timetabled hours already reach the target; no SML needed.', 'ok'); return; }
+      suggestBtn.disabled = true; smlStatus.set('Asking DeepSeek…');
+      try {
+        topicsText = topicsToText(await askDeepSeek(week, chosen(), remaining()));
+        topicsBox.value = topicsText;
+        smlStatus.set('Topics suggested. Edit them so they match what you\'ll actually revise.', 'ok');
+      } catch (e) { smlStatus.set(`✗ ${e.message}`, 'bad'); }
+      suggestBtn.disabled = false;
+    });
+    const fitBtn = h('button', { title: 'Scale your own times so SML fills exactly what\'s needed' }, 'Fit times to SML needed');
+    fitBtn.addEventListener('click', () => {
+      const t = textToTopics(topicsBox.value);
+      if (!t.length) { smlStatus.set('Add at least one "hh:mm | topic" line first.', 'warn'); return; }
+      topicsText = topicsToText(normaliseTopics(t, remaining()));
+      topicsBox.value = topicsText;
+      smlStatus.set(`Times scaled to ${fmtHM(remaining())}.`, 'ok');
+    });
+
+    // Note
+    const noteStatus = statusBox();
+    const dateInput = h('input', { type: 'text', inputmode: 'numeric', value: isoToUK(week.sessions[week.sessions.length - 1].date) });
+    const preview = h('textarea', { style: 'min-height:220px', value: noteText, oninput: (e) => { noteText = e.target.value; } });
+    const build = () => {
+      const topics = textToTopics(topicsBox.value);
+      const sml = topics.reduce((a, t) => a + t.minutes, 0);
+      noteText = buildNote(week, chosen(), topics, target);
+      preview.value = noteText;
+      const total = taught() + sml;
+      noteStatus.set(total === target ? '✓ Adds up to the target.'
+        : `⚠ Sessions + SML = ${fmtHM(total)}, target is ${fmtHM(target)}. Adjust the SML times (or press "Fit times").`,
+      total === target ? 'ok' : 'warn');
+    };
+    const buildBtn = h('button', { onclick: build }, 'Build note');
+    const copyNoteBtn = h('button', {}, 'Copy note');
+    copyNoteBtn.addEventListener('click', async () => {
+      if (!preview.value.trim()) build();
+      const ok = await copyText(preview.value);
+      noteStatus.set(ok ? '✓ Note copied. Paste it into Aptem\'s Notes box.' : '✗ Couldn\'t copy. Select the text and copy it yourself.',
+        ok ? 'ok' : 'bad');
+    });
+    const copyFillBtn = h('button', { class: 'primary' }, 'Copy for autofill');
+    copyFillBtn.addEventListener('click', async () => {
+      if (!preview.value.trim()) build();
+      const m = dateInput.value.trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+      if (!m) { noteStatus.set('✗ Completion date must be dd/mm/yyyy.', 'bad'); return; }
+      const payload = {
+        date: `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`,
+        hours: fmtHM(target),
+        noteType: settings.noteType,
+        otjType: settings.otjType,
+        note: preview.value,
+      };
+      const ok = await copyText(`OTJ-AUTOFILL:${JSON.stringify(payload)}`);
+      noteStatus.set(ok ? '✓ Copied. Now open the task on Aptem and tap your "OTJ fill" bookmark.' : '✗ Couldn\'t copy to the clipboard.',
+        ok ? 'ok' : 'bad');
+    });
+
+    return [
+      h('section', { class: 'card' },
+        h('h2', {}, '2. Sessions you attended'),
+        h('label', { class: 'field' }, 'Week title', titleInput),
+        h('label', { class: 'field' }, 'Theme (separate with ;)', themeInput),
+        summary,
+        h('p', { class: 'muted' }, 'Untick anything you missed.'),
+        list),
+      h('section', { class: 'card' },
+        h('h2', {}, '3. Self-managed learning'),
+        h('p', { class: 'muted' }, 'One line per block: hh:mm | topic. SML fills whatever the sessions don\'t.'),
+        h('div', { class: 'row' }, suggestBtn, fitBtn),
+        topicsBox, smlStatus),
+      h('section', { class: 'card' },
+        h('h2', {}, '4. Note'),
+        h('label', { class: 'field' }, 'Completion date (dd/mm/yyyy)', dateInput),
+        h('div', { class: 'row' }, buildBtn, copyNoteBtn, copyFillBtn),
+        preview, noteStatus),
+    ];
+  }
+
+  function autofillCard() {
+    const status = statusBox();
+    const link = h('a', { class: 'bm', href: bookmarkletURL(), onclick: (e) => { e.preventDefault(); status.set('Drag this button to your bookmarks bar instead of clicking it.', 'warn'); } }, 'OTJ fill');
+    const copyBtn = h('button', {}, 'Copy bookmark code');
+    copyBtn.addEventListener('click', async () => {
+      const ok = await copyText(bookmarkletURL());
+      status.set(ok ? '✓ Bookmark code copied.' : '✗ Couldn\'t copy.', ok ? 'ok' : 'bad');
+    });
+    return h('section', { class: 'card' },
+      h('h2', {}, 'Autofill on Aptem (set up once)'),
+      h('p', { class: 'muted' }, 'A bookmark that fills the Add Note form from "Copy for autofill". It never presses Save.'),
+      h('details', {},
+        h('summary', {}, 'Mac (Safari, Chrome, Edge, Firefox)'),
+        h('ol', {},
+          h('li', {}, 'Show the bookmarks bar (Safari: View → Show Favourites Bar).'),
+          h('li', {}, 'Drag this button onto the bar: ', link))),
+      h('details', {},
+        h('summary', {}, 'iPad / iPhone (Safari)'),
+        h('ol', {},
+          h('li', {}, 'Press ', copyBtn, '.'),
+          h('li', {}, 'Bookmark any page (share button → Add Bookmark) and call it "OTJ fill".'),
+          h('li', {}, 'Open Bookmarks, tap Edit, tap "OTJ fill", replace the address with what you copied and tap Done.'))),
+      h('p', { class: 'muted' }, 'Each week: press "Copy for autofill" here, open the task on Aptem, then choose the OTJ fill bookmark. If Safari asks to paste, allow it.'),
+      status);
+  }
+
+  function settingsCard() {
+    const fields = {
+      apiKey: h('input', { type: 'password', value: settings.apiKey, placeholder: 'sk-…', autocomplete: 'off' }),
+      model: h('input', { type: 'text', value: settings.model }),
+      target: h('input', { type: 'text', value: settings.target }),
+      noteType: h('input', { type: 'text', value: settings.noteType }),
+      otjType: h('input', { type: 'text', value: settings.otjType }),
+    };
+    const status = statusBox();
+    const save = h('button', { class: 'primary' }, 'Save settings');
+    save.addEventListener('click', () => {
+      if (parseHM(fields.target.value) == null) { status.set('✗ Weekly target must look like 37:30', 'bad'); return; }
+      for (const [k, el] of Object.entries(fields)) settings[k] = el.value.trim();
+      store.set('settings', settings);
+      render();
+    });
+    const clear = h('button', {}, 'Forget pasted weeks');
+    clear.addEventListener('click', () => {
+      if (!confirm('Delete all pasted timetables from this browser?')) return;
+      for (const k of Object.keys(weeks)) delete weeks[k];
+      saveWeeks(); weekKey = null; render();
+    });
+    return h('section', { class: 'card' },
+      h('details', {},
+        h('summary', {}, 'Settings'),
+        h('label', { class: 'field' }, 'DeepSeek API key (optional, stored only in this browser)', fields.apiKey),
+        h('label', { class: 'field' }, 'Model', fields.model),
+        h('label', { class: 'field' }, 'Weekly hours target', fields.target),
+        h('label', { class: 'field' }, 'Note type to pick', fields.noteType),
+        h('label', { class: 'field' }, 'OTJ hours type to pick (closest match is chosen)', fields.otjType),
+        h('div', { class: 'row' }, save, clear),
+        status));
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>
